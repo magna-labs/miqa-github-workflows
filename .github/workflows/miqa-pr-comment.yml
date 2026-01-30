@@ -38,6 +38,10 @@ on:
 jobs:
   miqa:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+      contents: read
 
     steps:
       - name: Parse command + args
