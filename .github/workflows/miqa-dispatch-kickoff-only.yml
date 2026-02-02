@@ -85,7 +85,7 @@ jobs:
           echo "additional_instructions=$add" >> "$GITHUB_OUTPUT"
 
       - name: Miqa Kickoff (manual)
-        uses: magna-labs/miqa-test-kickoff-only@v1.0.6
+        uses: magna-labs/miqa-test-kickoff-only@v1.0.7
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRIGGER_ID: ${{ steps.resolve.outputs.trigger_id }}
