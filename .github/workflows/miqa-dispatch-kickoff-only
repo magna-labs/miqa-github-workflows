@@ -1,0 +1,97 @@
+name: Miqa (reusable) - workflow_dispatch kickoff-only
+
+on:
+  workflow_call:
+    inputs:
+      miqa_endpoint:
+        type: string
+        required: true
+      trigger_map:
+        type: string
+        required: true
+      default_test:
+        type: string
+        required: false
+        default: "smoke"
+
+      # dispatch-provided inputs
+      test:
+        type: string
+        required: false
+        default: ""
+      trigger_id:
+        type: string
+        required: false
+        default: ""
+      uri:
+        type: string
+        required: false
+        default: ""
+      extra_kv:
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  miqa:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Resolve trigger + additional instructions
+        id: resolve
+        shell: bash
+        env:
+          MAP: ${{ inputs.trigger_map }}
+          DEFAULT_TEST: ${{ inputs.default_test }}
+          IN_TEST: ${{ inputs.test }}
+          IN_TRIGGER: ${{ inputs.trigger_id }}
+          EXTRA: ${{ inputs.extra_kv }}
+        run: |
+          set -euo pipefail
+
+          test_name="$(echo "${IN_TEST:-}" | tr '[:upper:]' '[:lower:]')"
+          trigger_id="${IN_TRIGGER:-}"
+
+          if [[ -z "$trigger_id" ]]; then
+            if [[ -z "$test_name" ]]; then
+              test_name="$DEFAULT_TEST"
+            fi
+            trigger_id="$(echo "$MAP" | jq -r --arg k "$test_name" '.[$k] // empty')"
+            if [[ -z "$trigger_id" ]]; then
+              valid="$(echo "$MAP" | jq -r 'keys | join(", ")')"
+              echo "::error::Unknown test '$test_name'. Valid tests: $valid. Or pass trigger_id."
+              exit 1
+            fi
+          fi
+
+          urlencode () {
+            python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+
+          add=""
+          for tok in $EXTRA; do
+            if [[ "$tok" == *"="* ]]; then
+              k="${tok%%=*}"
+              v="${tok#*=}"
+              if [[ -n "$v" ]]; then
+                add="${add}&$(urlencode "$k")=$(urlencode "$v")"
+              fi
+            fi
+          done
+
+          echo "trigger_id=$trigger_id" >> "$GITHUB_OUTPUT"
+          echo "additional_instructions=$add" >> "$GITHUB_OUTPUT"
+
+      - name: Miqa Kickoff (manual)
+        uses: magna-labs/miqa-test-kickoff-only@v1.1.7
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRIGGER_ID: ${{ steps.resolve.outputs.trigger_id }}
+          DOCKER_URI: ${{ inputs.uri }}
+          MIQA_ENDPOINT: ${{ inputs.miqa_endpoint }}
+          MIQA_API_KEY: ${{ secrets.MIQA_API_KEY }}
+          SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          ADDITIONAL_INSTRUCTIONS: ${{ steps.resolve.outputs.additional_instructions }}
