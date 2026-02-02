@@ -8,8 +8,8 @@ on:
         required: true
       installation_id:
         type: string
-        required: false
-        default: ""
+        required: true
+        description: GitHub App installation id used to create check runs
       trigger_map:
         type: string
         required: true
@@ -26,20 +26,11 @@ on:
         type: string
         required: false
         default: "/miqa"
-      enable_reactions:
-        type: boolean
-        required: false
-        default: true
-      enable_help_comment:
-        type: boolean
-        required: false
-        default: true
 
 jobs:
   miqa:
     runs-on: ubuntu-latest
     permissions:
-      issues: write
       pull-requests: read
       contents: read
 
@@ -59,38 +50,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Trim leading whitespace (keep original case for values)
           norm="$(echo "$BODY" | sed -e 's/^[[:space:]]*//')"
-
-          # Lowercased copy for matching keys/prefix
           lnorm="$(echo "$norm" | tr '[:upper:]' '[:lower:]')"
           lpref="$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')"
 
-          # Must start with prefix (wrapper already filters, but keep this safe)
           if [[ "$lnorm" != "$lpref"* ]]; then
             echo "ignore=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "ignore=false" >> "$GITHUB_OUTPUT"
 
-          # Strip the prefix itself (use raw PREFIX length), then trim leading spaces
           rest="${norm:${#PREFIX}}"
           rest="$(echo "$rest" | sed -e 's/^[[:space:]]*//')"
 
-          # Tokenize by whitespace (values cannot contain spaces)
           tokens=()
           while read -r tok; do
             [[ -n "$tok" ]] && tokens+=("$tok")
           done < <(printf '%s\n' $rest)
 
-          # Defaults
           test_name=""
           trigger_id=""
           docker_uri=""
           check_name="$DEFAULT_CHECK"
           additional_pairs=()
 
-          # If first token is "help", handle it
+          # help mode
           if [[ "${#tokens[@]}" -ge 1 ]]; then
             t0_l="$(echo "${tokens[0]}" | tr '[:upper:]' '[:lower:]')"
             if [[ "$t0_l" == "help" ]]; then
@@ -99,18 +83,16 @@ jobs:
             fi
           fi
 
-          # Shorthand: if first token is a bare word without '=' treat as test name (e.g. "smoke")
+          # shorthand test: /miqa smoke
           if [[ "${#tokens[@]}" -ge 1 && "${tokens[0]}" != *"="* ]]; then
             test_name="$(echo "${tokens[0]}" | tr '[:upper:]' '[:lower:]')"
           fi
 
-          # Parse key=value tokens
           for tok in "${tokens[@]}"; do
             if [[ "$tok" == *"="* ]]; then
               key="${tok%%=*}"
               val="${tok#*=}"
 
-              # strip surrounding quotes from val
               val="${val%\"}"; val="${val#\"}"
               val="${val%\'}"; val="${val#\'}"
 
@@ -130,19 +112,16 @@ jobs:
                   check_name="$val"
                   ;;
                 *)
-                  # Unknown pairs become additional instructions
                   additional_pairs+=("$key=$val")
                   ;;
               esac
             fi
           done
 
-          # If no explicit test_name and no trigger_id, use default
           if [[ -z "$test_name" && -z "$trigger_id" ]]; then
             test_name="$DEFAULT_TEST"
           fi
 
-          # If trigger_id wasn't explicitly set, look up via trigger map
           if [[ -z "$trigger_id" ]]; then
             trigger_id="$(echo "$MAP" | jq -r --arg k "$test_name" '.[$k] // empty')"
             if [[ -z "$trigger_id" ]]; then
@@ -150,71 +129,68 @@ jobs:
             fi
           fi
 
-          # Robust URL encoding for additional instructions
           urlencode () {
             python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
 
           add="&pr_number=$(urlencode "$PR_NUMBER")&commenter=$(urlencode "$COMMENTER")&comment_id=$(urlencode "$COMMENT_ID")"
-
           for pair in "${additional_pairs[@]}"; do
             k="${pair%%=*}"
             v="${pair#*=}"
             add="${add}&$(urlencode "$k")=$(urlencode "$v")"
           done
 
+          # build nicer check display
+          # - include test_name if present
+          # - include a shortened uri if present (max 32 chars)
+          uri_short=""
+          if [[ -n "$docker_uri" ]]; then
+            if [[ "${#docker_uri}" -le 32 ]]; then
+              uri_short="$docker_uri"
+            else
+              uri_short="${docker_uri:0:29}..."
+            fi
+          fi
+
+          display_check="$check_name"
+          if [[ -n "$test_name" ]]; then
+            display_check="${display_check} • ${test_name}"
+          fi
+          if [[ -n "$uri_short" ]]; then
+            display_check="${display_check} • ${uri_short}"
+          fi
+
           echo "subcmd=run" >> "$GITHUB_OUTPUT"
           echo "test_name=$test_name" >> "$GITHUB_OUTPUT"
           echo "trigger_id=$trigger_id" >> "$GITHUB_OUTPUT"
           echo "docker_uri=$docker_uri" >> "$GITHUB_OUTPUT"
           echo "check_name=$check_name" >> "$GITHUB_OUTPUT"
+          echo "check_display=$display_check" >> "$GITHUB_OUTPUT"
           echo "additional_instructions=$add" >> "$GITHUB_OUTPUT"
 
-      - name: React to comment (ack)
-        if: ${{ steps.args.outputs.ignore != 'true' && inputs.enable_reactions && steps.args.outputs.subcmd != 'help' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          COMMENT_ID: ${{ github.event.comment.id }}
+      - name: Help (log only)
+        if: ${{ steps.args.outputs.ignore != 'true' && steps.args.outputs.subcmd == 'help' }}
         run: |
-          gh api -X POST "repos/${REPO}/issues/comments/${COMMENT_ID}/reactions" \
-            -H "Accept: application/vnd.github+json" \
-            -f content='rocket' || true
+          echo "::notice::Miqa manual trigger usage:"
+          echo "::notice::  /miqa (defaults to test=${{ inputs.default_test }})"
+          echo "::notice::  /miqa smoke"
+          echo "::notice::  /miqa test=smoke"
+          echo "::notice::  /miqa trigger=<trigger_id>"
+          echo "::notice::  /miqa uri=<docker_image>"
+          echo "::notice::  Any other key=value pairs are forwarded to Miqa as additional instructions."
 
-      - name: Help / unknown test message
-        if: ${{ steps.args.outputs.ignore != 'true' && inputs.enable_help_comment && (steps.args.outputs.subcmd == 'help' || steps.args.outputs.trigger_id == '__UNKNOWN__') }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          MAP: ${{ inputs.trigger_map }}
-          DEFAULT_TEST: ${{ inputs.default_test }}
-          PREFIX: ${{ inputs.command_prefix }}
-        run: |
-          commands="$(echo "$MAP" | jq -r 'keys | join(", ")')"
-          cat > /tmp/miqa_help.md <<EOF
-          **Miqa manual trigger**
-
-          **Usage**
-          - \`$PREFIX\` (defaults to \`$DEFAULT_TEST\`)
-          - \`$PREFIX smoke\`
-          - \`$PREFIX test=smoke\`
-          - \`$PREFIX trigger=<trigger_id>\`
-          - \`$PREFIX uri=<docker_image>\`
-          - Any other \`key=value\` pairs are forwarded to Miqa as additional instructions.
-
-          **Known test names**
-          $commands
-
-          **Example**
-          \`$PREFIX dockerTag=abc uri=staphb/bcftools:1.4 test=smoke random=def\`
-          EOF
-
-          gh api -X POST "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" -f body=@/tmp/miqa_help.md
-
-      - name: Stop if help/unknown/ignore
-        if: ${{ steps.args.outputs.ignore == 'true' || steps.args.outputs.subcmd == 'help' || steps.args.outputs.trigger_id == '__UNKNOWN__' }}
+      - name: Stop if help/ignore
+        if: ${{ steps.args.outputs.ignore == 'true' || steps.args.outputs.subcmd == 'help' }}
         run: exit 0
+
+      - name: Unknown test (log)
+        if: ${{ steps.args.outputs.trigger_id == '__UNKNOWN__' }}
+        env:
+          MAP: ${{ inputs.trigger_map }}
+        run: |
+          valid="$(echo "$MAP" | jq -r 'keys | join(", ")')"
+          echo "::error::Unknown test name (no trigger_map entry). Valid tests: ${valid}. Or use trigger=<trigger_id>."
+          exit 1
 
       - name: Get PR head SHA
         id: pr
@@ -231,7 +207,7 @@ jobs:
         uses: magna-labs/miqa-test-kickoff@v1.1.7
         with:
           INSTALLATION_ID: ${{ inputs.installation_id }}
-          CHECK_NAME: ${{ steps.args.outputs.check_name }} (manual) PR #${{ github.event.issue.number }}
+          CHECK_NAME: ${{ steps.args.outputs.check_display }} (manual) PR #${{ github.event.issue.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRIGGER_ID: ${{ steps.args.outputs.trigger_id }}
           MIQA_ENDPOINT: ${{ inputs.miqa_endpoint }}
@@ -245,7 +221,7 @@ jobs:
         uses: magna-labs/miqa-test-kickoff@v1.1.7
         with:
           INSTALLATION_ID: ${{ inputs.installation_id }}
-          CHECK_NAME: ${{ steps.args.outputs.check_name }} (manual) PR #${{ github.event.issue.number }}
+          CHECK_NAME: ${{ steps.args.outputs.check_display }} (manual) PR #${{ github.event.issue.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRIGGER_ID: ${{ steps.args.outputs.trigger_id }}
           DOCKER_URI: ${{ steps.args.outputs.docker_uri }}
@@ -254,14 +230,3 @@ jobs:
           SHA: ${{ steps.pr.outputs.sha }}
           REPOSITORY: ${{ github.repository }}
           ADDITIONAL_INSTRUCTIONS: ${{ steps.args.outputs.additional_instructions }}
-
-      - name: React to comment (accepted)
-        if: ${{ inputs.enable_reactions }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          COMMENT_ID: ${{ github.event.comment.id }}
-        run: |
-          gh api -X POST "repos/${REPO}/issues/comments/${COMMENT_ID}/reactions" \
-            -H "Accept: application/vnd.github+json" \
-            -f content='white_check_mark' || true
