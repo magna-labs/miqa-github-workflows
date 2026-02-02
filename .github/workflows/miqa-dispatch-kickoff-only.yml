@@ -13,6 +13,11 @@ on:
         type: string
         required: false
         default: "smoke"
+      non_docker:
+        type: boolean
+        required: false
+        default: false
+
 
       # dispatch-provided inputs
       test:
@@ -48,6 +53,7 @@ jobs:
           IN_TEST: ${{ inputs.test }}
           IN_TRIGGER: ${{ inputs.trigger_id }}
           EXTRA: ${{ inputs.extra_kv }}
+          NON_DOCKER: ${{ inputs.non_docker }}
         run: |
           set -euo pipefail
 
@@ -80,6 +86,10 @@ jobs:
               fi
             fi
           done
+
+          if [[ "${NON_DOCKER:-false}" == "true" ]]; then
+            add="${add}&is_non_docker=1&offline_version=1&skip_check_docker=1"
+          fi
 
           echo "trigger_id=$trigger_id" >> "$GITHUB_OUTPUT"
           echo "additional_instructions=$add" >> "$GITHUB_OUTPUT"
