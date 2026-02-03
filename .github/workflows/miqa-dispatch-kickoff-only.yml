@@ -36,6 +36,11 @@ on:
         type: string
         required: false
         default: ""
+      instructionval_keys:
+        type: string
+        required: false
+        default: ""
+        description: "Comma-separated keys to rewrite as instructionval__<key>=..."
 
 jobs:
   miqa:
@@ -54,6 +59,7 @@ jobs:
           IN_TRIGGER: ${{ inputs.trigger_id }}
           EXTRA: ${{ inputs.extra_kv }}
           NON_DOCKER: ${{ inputs.non_docker }}
+          INSTRUCTIONVAL_KEYS: ${{ inputs.instructionval_keys }}
         run: |
           set -euo pipefail
 
@@ -76,12 +82,19 @@ jobs:
             python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
 
+          # allowlist: "a,b,c" -> ",a,b,c,"
+          ikeys=",$(echo "${INSTRUCTIONVAL_KEYS:-}" | tr -d ' ' | tr '[:upper:]' '[:lower:]'),"
+
           add="&force_create_new=1"
           for tok in $EXTRA; do
             if [[ "$tok" == *"="* ]]; then
               k="${tok%%=*}"
               v="${tok#*=}"
               if [[ -n "$v" ]]; then
+                k_lc="$(echo "$k" | tr '[:upper:]' '[:lower:]')"
+                if [[ "$ikeys" == *",$k_lc,"* ]]; then
+                  k="instructionval__${k}"
+                fi
                 add="${add}&$(urlencode "$k")=$(urlencode "$v")"
               fi
             fi
