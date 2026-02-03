@@ -52,6 +52,7 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           COMMENTER: ${{ github.event.comment.user.login }}
           COMMENT_ID: ${{ github.event.comment.id }}
+          INSTRUCTIONVAL_KEYS: ${{ inputs.instructionval_keys }}
         run: |
           set -euo pipefail
 
@@ -94,6 +95,9 @@ jobs:
             test_name="$(echo "${tokens[0]}" | tr '[:upper:]' '[:lower:]')"
           fi
 
+          # allowlist: "a,b,c" -> ",a,b,c,"
+          ikeys=",$(echo "${INSTRUCTIONVAL_KEYS:-}" | tr -d ' ' | tr '[:upper:]' '[:lower:]'),"
+
           for tok in "${tokens[@]}"; do
             if [[ "$tok" == *"="* ]]; then
               key="${tok%%=*}"
@@ -124,7 +128,12 @@ jobs:
                   fi
                   ;;
                 *)
-                  additional_pairs+=("$key=$val")
+                  key_lc="$(echo "$key" | tr '[:upper:]' '[:lower:]')"
+                  if [[ "$ikeys" == *",$key_lc,"* ]]; then
+                    additional_pairs+=("instructionval__${key}=${val}")
+                  else
+                    additional_pairs+=("${key}=${val}")
+                  fi
                   ;;
               esac
             fi
