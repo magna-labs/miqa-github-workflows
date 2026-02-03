@@ -161,7 +161,7 @@ jobs:
             add="${add}&$(urlencode "$k")=$(urlencode "$v")"
           done
           if [[ "${NON_DOCKER:-false}" == "true" ]]; then
-            add="${add}&is_non_docker=1&offline_version=1&skip_check_docker=1"
+            add="${add}&is_non_docker=1&skip_check_docker=1&force_create_new=1"
           fi
 
 
