@@ -73,6 +73,7 @@ jobs:
           docker_uri=""
           check_name="$DEFAULT_CHECK"
           additional_pairs=()
+          NON_DOCKER="false"
 
           # help mode
           if [[ "${#tokens[@]}" -ge 1 ]]; then
@@ -111,6 +112,12 @@ jobs:
                 check|check_name)
                   check_name="$val"
                   ;;
+                non_docker)
+                  v_l="$(echo "$val" | tr '[:upper:]' '[:lower:]')"
+                  if [[ "$v_l" == "1" || "$v_l" == "true" || "$v_l" == "yes" ]]; then
+                    NON_DOCKER="true"
+                  fi
+                  ;;
                 *)
                   additional_pairs+=("$key=$val")
                   ;;
@@ -139,6 +146,10 @@ jobs:
             v="${pair#*=}"
             add="${add}&$(urlencode "$k")=$(urlencode "$v")"
           done
+          if [[ "${NON_DOCKER:-false}" == "true" ]]; then
+            add="${add}&is_non_docker=1&offline_version=1&skip_check_docker=1"
+          fi
+
 
           # build nicer check display
           # - include test_name if present
