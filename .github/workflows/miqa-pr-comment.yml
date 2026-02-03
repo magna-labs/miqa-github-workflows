@@ -26,6 +26,11 @@ on:
         type: string
         required: false
         default: "/miqa"
+      instructionval_keys:
+        type: string
+        required: false
+        default: ""
+        description: "Comma-separated keys to rewrite as instructionval__<key>=..."
 
 jobs:
   miqa:
