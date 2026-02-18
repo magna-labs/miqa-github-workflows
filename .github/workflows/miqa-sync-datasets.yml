@@ -98,5 +98,6 @@ jobs:
           MIQA_SOURCE_PATH: ${{ inputs.source_path }}
           MIQA_SOURCE_FORMAT: ${{ inputs.source_format }}
           MIQA_DRY_RUN: ${{ inputs.dry_run }}
+          MIQA_WORKFLOW_VERSION: ${{ github.sha }}
         run: |
           python scripts/miqa_sync_datasets.py
