@@ -64,10 +64,28 @@ jobs:
     concurrency:
       group: miqa-sync-datasets
       cancel-in-progress: false
-
+      
     steps:
-      - name: Checkout
+      - name: Checkout caller repository
         uses: actions/checkout@v4
+        with:
+          path: caller
+
+      - name: Resolve workflow ref
+        id: wfref
+        shell: bash
+        run: |
+          # Example: magna-labs/miqa-github-workflows/.github/workflows/miqa-sync-datasets.yml@v1.1.0
+          echo "workflow_ref=$GITHUB_WORKFLOW_REF"
+          ref="${GITHUB_WORKFLOW_REF##*@}"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout miqa-github-workflows (for scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: magna-labs/miqa-github-workflows
+          ref: "${{ steps.wfref.outputs.ref }}"
+          path: miqa-workflows
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -86,7 +104,7 @@ jobs:
             echo "Unsupported source_format: $fmt (supported: csv)"
             exit 2
           fi
-
+          
       - name: Sync
         env:
           MIQA_APP_KEY: "${{ secrets.app_key }}"
@@ -95,9 +113,9 @@ jobs:
           MIQA_PIPELINE_ID: "${{ inputs.pipeline_id }}"
           MIQA_ORG_ID: "${{ inputs.org_id }}"
           MIQA_TIMEOUT: "${{ inputs.timeout_seconds }}"
-          MIQA_SOURCE_PATH: "${{ inputs.source_path }}"
+          MIQA_SOURCE_PATH: "caller/${{ inputs.source_path }}"
           MIQA_SOURCE_FORMAT: "${{ inputs.source_format }}"
           MIQA_DRY_RUN: "${{ inputs.dry_run }}"
-          MIQA_WORKFLOW_VERSION: "${{ github.sha }}"
+          MIQA_WORKFLOW_VERSION: "${{ steps.wfref.outputs.ref }}"
         run: |
-          python scripts/miqa_sync_datasets.py
+          python miqa-workflows/scripts/miqa_sync_datasets.py
