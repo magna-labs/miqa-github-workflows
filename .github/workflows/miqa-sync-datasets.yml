@@ -1,0 +1,102 @@
+name: Miqa Sync Datasets
+
+on:
+  workflow_call:
+    inputs:
+      source_path:
+        description: Path to the dataset source file in the caller repository.
+        type: string
+        required: false
+        default: ".miqa/samples.csv"
+
+      source_format:
+        description: Source file format (currently supported: csv).
+        type: string
+        required: false
+        default: "csv"
+
+      base_url:
+        description: Base URL for the Miqa API (e.g. https://yourco.miqa.io).
+        type: string
+        required: true
+
+      pipeline_id:
+        description: Pipeline identifier (sent as ?pipeline_id=...).
+        type: string
+        required: true
+
+      endpoint:
+        description: API endpoint path to POST to.
+        type: string
+        required: false
+        default: "/api/batch_ds_upsert"
+
+      org_id:
+        description: Optional org identifier (sent as ?org_id=...).
+        type: string
+        required: false
+        default: ""
+
+      timeout_seconds:
+        description: Request timeout in seconds.
+        type: string
+        required: false
+        default: "60"
+
+      dry_run:
+        description: If true, prints the request payload without sending it.
+        type: boolean
+        required: false
+        default: false
+
+    secrets:
+      app_key:
+        description: Miqa API key (used as the `app-key` request header).
+        required: true
+
+jobs:
+  sync:
+    name: Sync datasets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    concurrency:
+      group: miqa-sync-datasets
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Validate inputs
+        run: |
+          fmt="${{ inputs.source_format }}"
+          if [ "$fmt" != "csv" ]; then
+            echo "Unsupported source_format: $fmt (supported: csv)"
+            exit 2
+          fi
+
+      - name: Sync
+        env:
+          MIQA_APP_KEY: ${{ secrets.app_key }}
+          MIQA_BASE_URL: ${{ inputs.base_url }}
+          MIQA_ENDPOINT: ${{ inputs.endpoint }}
+          MIQA_PIPELINE_ID: ${{ inputs.pipeline_id }}
+          MIQA_ORG_ID: ${{ inputs.org_id }}
+          MIQA_TIMEOUT: ${{ inputs.timeout_seconds }}
+          MIQA_SOURCE_PATH: ${{ inputs.source_path }}
+          MIQA_SOURCE_FORMAT: ${{ inputs.source_format }}
+          MIQA_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          python scripts/miqa_sync_datasets.py
