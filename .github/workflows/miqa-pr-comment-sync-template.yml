@@ -1,0 +1,298 @@
+name: Miqa - PR comment - sync template
+
+on:
+  workflow_call:
+    inputs:
+      miqa_endpoint:
+        type: string
+        required: true
+      installation_id:
+        type: string
+        required: true
+        description: "GitHub App installation id used to create check runs"
+      trigger_map:
+        type: string
+        required: true
+        description: "JSON mapping test name -> trigger id"
+      default_test:
+        type: string
+        required: false
+        default: "smoke"
+      default_check_name:
+        type: string
+        required: false
+        default: "Miqa Kickoff"
+      command_prefix:
+        type: string
+        required: false
+        default: "/miqa"
+      instructionval_keys:
+        type: string
+        required: false
+        default: ""
+        description: "Comma-separated keys to rewrite as instructionval__<key>=..."
+
+      template_json_command:
+        type: string
+        required: false
+        default: ""
+        description: "Command to run in the PR branch that prints template_json JSON to stdout."
+
+      template_json_path:
+        type: string
+        required: false
+        default: ".miqa/component_template.json"
+        description: "Path to a JSON file in the PR branch to use as template_json when no command is provided."
+
+jobs:
+  miqa:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+
+    steps:
+      - name: Parse command + args
+        id: args
+        shell: bash
+        env:
+          BODY: ${{ github.event.comment.body }}
+          PREFIX: ${{ inputs.command_prefix }}
+          MAP: ${{ inputs.trigger_map }}
+          DEFAULT_TEST: ${{ inputs.default_test }}
+          DEFAULT_CHECK: ${{ inputs.default_check_name }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          INSTRUCTIONVAL_KEYS: ${{ inputs.instructionval_keys }}
+        run: |
+          set -euo pipefail
+
+          norm="$(echo "$BODY" | sed -e 's/^[[:space:]]*//')"
+          lnorm="$(echo "$norm" | tr '[:upper:]' '[:lower:]')"
+          lpref="$(echo "$PREFIX" | tr '[:upper:]' '[:lower:]')"
+
+          if [[ "$lnorm" != "$lpref"* ]]; then
+            echo "ignore=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ignore=false" >> "$GITHUB_OUTPUT"
+
+          rest="${norm:${#PREFIX}}"
+          rest="$(echo "$rest" | sed -e 's/^[[:space:]]*//')"
+
+          tokens=()
+          while read -r tok; do
+            [[ -n "$tok" ]] && tokens+=("$tok")
+          done < <(printf '%s\n' $rest)
+
+          test_name=""
+          trigger_id=""
+          docker_uri=""
+          check_name="$DEFAULT_CHECK"
+          additional_pairs=()
+          NON_DOCKER="false"
+
+          if [[ "${#tokens[@]}" -ge 1 ]]; then
+            t0_l="$(echo "${tokens[0]}" | tr '[:upper:]' '[:lower:]')"
+            if [[ "$t0_l" == "help" ]]; then
+              echo "subcmd=help" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          if [[ "${#tokens[@]}" -ge 1 && "${tokens[0]}" != *"="* ]]; then
+            test_name="$(echo "${tokens[0]}" | tr '[:upper:]' '[:lower:]')"
+          fi
+
+          ikeys=",$(echo "${INSTRUCTIONVAL_KEYS:-}" | tr -d ' ' | tr '[:upper:]' '[:lower:]'),"
+
+          for tok in "${tokens[@]}"; do
+            if [[ "$tok" == *"="* ]]; then
+              key="${tok%%=*}"
+              val="${tok#*=}"
+
+              val="${val%\"}"; val="${val#\"}"
+              val="${val%\'}"; val="${val#\'}"
+
+              key_l="$(echo "$key" | tr '[:upper:]' '[:lower:]')"
+
+              case "$key_l" in
+                uri)
+                  docker_uri="$val"
+                  ;;
+                test)
+                  test_name="$(echo "$val" | tr '[:upper:]' '[:lower:]')"
+                  ;;
+                trigger|trigger_id)
+                  trigger_id="$val"
+                  ;;
+                check|check_name)
+                  check_name="$val"
+                  ;;
+                non_docker)
+                  v_l="$(echo "$val" | tr '[:upper:]' '[:lower:]')"
+                  if [[ "$v_l" == "1" || "$v_l" == "true" || "$v_l" == "yes" ]]; then
+                    NON_DOCKER="true"
+                  fi
+                  ;;
+                *)
+                  key_lc="$(echo "$key" | tr '[:upper:]' '[:lower:]')"
+                  if [[ "$ikeys" == *",$key_lc,"* ]]; then
+                    additional_pairs+=("instructionval__${key}=${val}")
+                  else
+                    additional_pairs+=("${key}=${val}")
+                  fi
+                  ;;
+              esac
+            fi
+          done
+
+          if [[ -z "$test_name" && -z "$trigger_id" ]]; then
+            test_name="$DEFAULT_TEST"
+          fi
+
+          if [[ -z "$trigger_id" ]]; then
+            trigger_id="$(echo "$MAP" | jq -r --arg k "$test_name" '.[$k] // empty')"
+            if [[ -z "$trigger_id" ]]; then
+              trigger_id="__UNKNOWN__"
+            fi
+          fi
+
+          urlencode () {
+            python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+
+          add="&force_create_new=1&pr_number=$(urlencode "$PR_NUMBER")&commenter=$(urlencode "$COMMENTER")&comment_id=$(urlencode "$COMMENT_ID")"
+          for pair in "${additional_pairs[@]}"; do
+            k="${pair%%=*}"
+            v="${pair#*=}"
+            add="${add}&$(urlencode "$k")=$(urlencode "$v")"
+          done
+          if [[ "${NON_DOCKER:-false}" == "true" ]]; then
+            add="${add}&is_non_docker=1&skip_check_docker=1&force_create_new=1"
+          fi
+
+          uri_short=""
+          if [[ -n "$docker_uri" ]]; then
+            if [[ "${#docker_uri}" -le 32 ]]; then
+              uri_short="$docker_uri"
+            else
+              uri_short="${docker_uri:0:29}..."
+            fi
+          fi
+
+          display_check="$check_name"
+          if [[ -n "$test_name" ]]; then
+            display_check="${display_check} • ${test_name}"
+          fi
+          if [[ -n "$uri_short" ]]; then
+            display_check="${display_check} • ${uri_short}"
+          fi
+
+          echo "subcmd=run" >> "$GITHUB_OUTPUT"
+          echo "test_name=$test_name" >> "$GITHUB_OUTPUT"
+          echo "trigger_id=$trigger_id" >> "$GITHUB_OUTPUT"
+          echo "docker_uri=$docker_uri" >> "$GITHUB_OUTPUT"
+          echo "check_name=$check_name" >> "$GITHUB_OUTPUT"
+          echo "check_display=$display_check" >> "$GITHUB_OUTPUT"
+          echo "additional_instructions=$add" >> "$GITHUB_OUTPUT"
+
+      - name: Help (log only)
+        if: ${{ steps.args.outputs.ignore != 'true' && steps.args.outputs.subcmd == 'help' }}
+        run: |
+          echo "::notice::Miqa manual trigger usage:"
+          echo "::notice::  /miqa (defaults to test=${{ inputs.default_test }})"
+          echo "::notice::  /miqa smoke"
+          echo "::notice::  /miqa test=smoke"
+          echo "::notice::  /miqa trigger=<trigger_id>"
+          echo "::notice::  /miqa uri=<docker_image>"
+          echo "::notice::  Any other key=value pairs are forwarded to Miqa as additional instructions."
+
+      - name: Stop if help/ignore
+        if: ${{ steps.args.outputs.ignore == 'true' || steps.args.outputs.subcmd == 'help' }}
+        run: exit 0
+
+      - name: Unknown test (log)
+        if: ${{ steps.args.outputs.trigger_id == '__UNKNOWN__' }}
+        env:
+          MAP: ${{ inputs.trigger_map }}
+        run: |
+          valid="$(echo "$MAP" | jq -r 'keys | join(", ")')"
+          echo "::error::Unknown test name (no trigger_map entry). Valid tests: ${valid}. Or use trigger=<trigger_id>."
+          exit 1
+
+      - name: Get PR head SHA
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          sha=$(gh api "repos/${REPO}/pulls/${PR}" --jq .head.sha)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.sha }}
+
+      - name: Generate template_json
+        id: tmpl
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          json=""
+
+          if [[ -n "${{ inputs.template_json_command }}" ]]; then
+            json="$(bash -lc "${{ inputs.template_json_command }}")"
+          else
+            if [[ -f "${{ inputs.template_json_path }}" ]]; then
+              json="$(cat "${{ inputs.template_json_path }}")"
+            fi
+          fi
+
+          if [[ -z "$json" ]]; then
+            echo "has_template_json=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          json="$(echo "$json" | jq -c .)"
+          enc="$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$json")"
+
+          echo "has_template_json=true" >> "$GITHUB_OUTPUT"
+          echo "template_json_encoded=$enc" >> "$GITHUB_OUTPUT"
+
+      - name: Miqa Kickoff
+        if: ${{ steps.args.outputs.docker_uri == '' }}
+        uses: magna-labs/miqa-test-kickoff@v1.1.7
+        with:
+          INSTALLATION_ID: ${{ inputs.installation_id }}
+          CHECK_NAME: ${{ steps.args.outputs.check_display }} (manual) PR #${{ github.event.issue.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRIGGER_ID: ${{ steps.args.outputs.trigger_id }}
+          MIQA_ENDPOINT: ${{ inputs.miqa_endpoint }}
+          MIQA_API_KEY: ${{ secrets.MIQA_API_KEY }}
+          SHA: ${{ steps.pr.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
+          ADDITIONAL_INSTRUCTIONS: >-
+            ${{ steps.args.outputs.additional_instructions }}
+            ${{ steps.tmpl.outputs.has_template_json == 'true' && format('&template_json={0}', steps.tmpl.outputs.template_json_encoded) || '' }}
+
+      - name: Miqa Kickoff (with uri)
+        if: ${{ steps.args.outputs.docker_uri != '' }}
+        uses: magna-labs/miqa-test-kickoff@v1.1.7
+        with:
+          INSTALLATION_ID: ${{ inputs.installation_id }}
+          CHECK_NAME: ${{ steps.args.outputs.check_display }} (manual) PR #${{ github.event.issue.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRIGGER_ID: ${{ steps.args.outputs.trigger_id }}
+          DOCKER_URI: ${{ steps.args.outputs.docker_uri }}
+          MIQA_ENDPOINT: ${{ inputs.miqa_endpoint }}
+          MIQA_API_KEY: ${{ secrets.MIQA_API_KEY }}
+          SHA: ${{ steps.pr.outputs.sha }}
+          REPOSITORY: ${{ github.repository }}
+          ADDITIONAL_INSTRUCTIONS: >-
+            ${{ steps.args.outputs.additional_instructions }}
+            ${{ steps.tmpl.outputs.has_template_json == 'true' && format('&template_json={0}', steps.tmpl.outputs.template_json_encoded) || '' }}
