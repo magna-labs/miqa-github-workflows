@@ -12,8 +12,9 @@ on:
         description: GitHub App installation id used to create check runs
       trigger_map:
         type: string
-        required: true
-        description: JSON mapping test name -> trigger id
+        required: false
+        default: ""
+        description: Optional JSON mapping test name -> trigger id
       default_test:
         type: string
         required: false
@@ -142,14 +143,20 @@ jobs:
           if [[ -z "$test_name" && -z "$trigger_id" ]]; then
             test_name="$DEFAULT_TEST"
           fi
-
+          
           if [[ -z "$trigger_id" ]]; then
-            trigger_id="$(echo "$MAP" | jq -r --arg k "$test_name" '.[$k] // empty')"
-            if [[ -z "$trigger_id" ]]; then
-              trigger_id="__UNKNOWN__"
+            mapped_trigger_id=""
+            if [[ -n "$MAP" ]]; then
+              mapped_trigger_id="$(echo "$MAP" | jq -r --arg k "$test_name" '.[$k] // empty')"
+            fi
+          
+            if [[ -n "$mapped_trigger_id" ]]; then
+              trigger_id="$mapped_trigger_id"
+            else
+              trigger_id="$test_name"
             fi
           fi
-
+          
           urlencode () {
             python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
@@ -207,15 +214,6 @@ jobs:
       - name: Stop if help/ignore
         if: ${{ steps.args.outputs.ignore == 'true' || steps.args.outputs.subcmd == 'help' }}
         run: exit 0
-
-      - name: Unknown test (log)
-        if: ${{ steps.args.outputs.trigger_id == '__UNKNOWN__' }}
-        env:
-          MAP: ${{ inputs.trigger_map }}
-        run: |
-          valid="$(echo "$MAP" | jq -r 'keys | join(", ")')"
-          echo "::error::Unknown test name (no trigger_map entry). Valid tests: ${valid}. Or use trigger=<trigger_id>."
-          exit 1
 
       - name: Get PR head SHA
         id: pr
