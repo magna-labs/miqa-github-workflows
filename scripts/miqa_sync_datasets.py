@@ -90,6 +90,9 @@ def main() -> int:
 
     timeout = int(os.environ.get("MIQA_TIMEOUT", "60"))
     dry_run = os.environ.get("MIQA_DRY_RUN", "").strip().lower() in ("1", "true", "yes")
+    # default stays "replace": this script re-sends every column for every row,
+    # so a full sync run still clears a field that was removed from the CSV.
+    merge = os.environ.get("MIQA_MERGE", "").strip().lower() in ("1", "true", "yes")
 
     if not app_key:
         err("Missing MIQA_APP_KEY (secret: app_key)")
@@ -140,14 +143,14 @@ def main() -> int:
     for w in warnings:
         print(f"WARN: {w}")
 
-    payload = {"items": items}
+    payload = {"items": items, "merge": merge}
 
     if dry_run:
         print("DRY RUN")
         print("POST", url)
         print("Params:", json.dumps(params, indent=2))
         print("Headers:", json.dumps({**headers, "app-key": "***"}, indent=2))
-        print(f"Body: {{'items': [...]}}  (items={len(items)})")
+        print(f"Body: {{'items': [...], 'merge': {merge}}}  (items={len(items)})")
         print("Body:", json.dumps(payload, indent=2))
         return 0
 

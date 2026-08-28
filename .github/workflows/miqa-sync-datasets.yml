@@ -49,6 +49,15 @@ on:
         required: false
         default: false
 
+      merge:
+        description: >-
+          If true, an update merges onto the existing dataset's fields instead of
+          replacing them outright. Leave false for a full sync from a complete CSV
+          (the default), where omitting a column is how you clear that field.
+        type: boolean
+        required: false
+        default: false
+
     secrets:
       app_key:
         description: "Miqa API key (used as the `app-key` request header)."
@@ -116,6 +125,7 @@ jobs:
           MIQA_SOURCE_PATH: "caller/${{ inputs.source_path }}"
           MIQA_SOURCE_FORMAT: "${{ inputs.source_format }}"
           MIQA_DRY_RUN: "${{ inputs.dry_run }}"
+          MIQA_MERGE: "${{ inputs.merge }}"
           MIQA_WORKFLOW_VERSION: "${{ steps.wfref.outputs.ref }}"
         run: |
           python miqa-workflows/scripts/miqa_sync_datasets.py
